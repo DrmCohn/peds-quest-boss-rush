@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Peds Quest: Boss Rush (Single File)</title>
+  <style>body{margin:0;background:#0b0b0b}</style>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useRef, useState, useEffect } = React;
+
+    function useSFX() {
+      const ctxRef = useRef(null);
+      const ensure = () => (ctxRef.current ||= new (window.AudioContext || window.webkitAudioContext)());
+      const tone = (freq, t = 0.09, type = "square", vol = 0.06) => {
+        const ctx = ensure();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = type; o.frequency.value = freq; g.gain.value = vol;
+        o.connect(g); g.connect(ctx.destination);
+        o.start(); o.stop(ctx.currentTime + t);
+      };
+      const seq = (notes, gap = 70) => notes.forEach((f, i) => setTimeout(() => tone(f, 0.08), i * gap));
+      const correct = () => seq([660, 880, 1320], 60);
+      const wrong = () => tone(180, 0.2, "square", 0.08);
+      const click = () => tone(300, 0.05, "square", 0.04);
+      const ambientId = useRef(null);
+      const ambientStart = () => {
+        if (ambientId.current != null) return;
+        ambientId.current = window.setInterval(() => seq([262, 330, 392, 523], 90), 2000);
+      };
+      const ambientStop = () => { if (ambientId.current != null) { clearInterval(ambientId.current); ambientId.current = null; } };
+      const critical = () => seq([784, 988, 1319, 1760], 50);
+      return { correct, wrong, click, ambientStart, ambientStop, critical };
+    }
+
+    const SEED_QA = [
+      { id: 'nbs_epig', topic: 'ENT', mode:'nbs', stem: 'Unvaccinated child with fever, drooling, tripod. Next best step?', choices: ['Secure airway (intubate)', 'Neck x-ray', 'Throat culture', 'Oral amoxicillin'], answerIndex: 0, pearl: 'Epiglottitis = airway first. Then IV ceftriaxone/cefotaxime; rifampin to close contacts.', weight: 3 },
+      { id: 'nbs_croup', topic: 'ENT', mode:'nbs', stem: 'Barking cough, inspiratory stridor; mild-moderate. Best initial step?', choices: ['Supportive ± racemic epinephrine', 'Immediate intubation', 'Azithromycin', 'Heliox only'], answerIndex: 0, pearl: 'Croup (parainfluenza): supportive; racemic epi if moderate-severe.', weight: 2 },
+      { id: 'nbs_bronch', topic: 'Pulm', mode:'nbs', stem: '<18 mo with wheeze after viral prodrome; dx/tx?', choices: ['RSV bronchiolitis; supportive', 'Asthma; ICS now', 'Pertussis; macrolide', 'Pneumothorax; needle'], answerIndex: 0, pearl: 'Bronchiolitis = supportive; no routine bronchodilators.', weight: 2 },
+      { id: 'nbs_fba', topic: 'Pulm', mode:'nbs', stem: 'Toddler sudden cough/wheeze; unilateral hyperinflation. Next step?', choices: ['Rigid bronchoscopy', 'Nebulized epi', 'Oral steroid', 'Observe'], answerIndex: 0, pearl: 'Foreign body → bronchoscopy (diagnostic & therapeutic).', weight: 3 },
+      { id: 'fact_asd', topic: 'Cardio', mode:'fact', stem: 'Fixed splitting of S2 in child. Dx?', choices: ['VSD', 'ASD', 'PDA', 'TOF'], answerIndex: 1, pearl: 'Wide fixed S2 = ASD.', weight: 2 },
+      { id: 'fact_vsd', topic: 'Cardio', mode:'fact', stem: 'Holosystolic murmur at left lower sternal border.', choices: ['VSD', 'MR', 'HOCM', 'PDA'], answerIndex: 0, pearl: 'Classic VSD site/quality.', weight: 2 },
+      { id: 'nbs_pda', topic: 'Cardio', mode:'nbs', stem: 'Preterm neonate with continuous machinery murmur. Med to close?', choices: ['Indomethacin', 'Prostaglandin E1', 'Epinephrine', 'Heparin'], answerIndex: 0, pearl: 'Indomethacin closes; PGE1 keeps PDA open.', weight: 2 },
+      { id: 'nbs_asthma_discharge', topic: 'Pulm', mode:'nbs', stem: 'Child hospitalized for acute asthma improves. Discharge addition?', choices: ['Start inhaled corticosteroid', 'LABA monotherapy', 'Nothing; SABA only', 'Chronic oral prednisone'], answerIndex: 0, pearl: 'Admission → ensure ICS on discharge.', weight: 2 },
+      { id: 'nbs_ttn', topic: 'Neo', mode:'nbs', stem: 'Term C-section neonate tachypnea; CXR fluid in fissures.', choices: ['Transient tachypnea of newborn', 'NRDS', 'Meconium aspiration', 'PNA—start amp/gent'], answerIndex: 0, pearl: 'TTN = retained fetal lung fluid; supportive.', weight: 2 },
+      { id: 'fact_mcd', topic: 'Renal', mode:'fact', stem: 'Child with edema, heavy proteinuria, no hematuria.', choices: ['PSGN', 'Minimal change disease', 'IgA nephropathy', 'Alport'], answerIndex: 1, pearl: 'MCD → podocyte effacement; steroid-responsive.', weight: 2 },
+      { id: 'nbs_hsp', topic: 'Heme/Immuno', mode:'nbs', stem: 'Palpable purpura legs + arthralgia + abd pain + hematuria after URI. Next step?', choices: ['Supportive ± steroids', 'Platelet transfusion', 'tPA', 'Bone marrow bx'], answerIndex: 0, pearl: 'HSP/IgA vasculitis: supportive; steroids if severe GI/joint sx.', weight: 2 },
+      { id: 'nbs_meningitis', topic: 'ID', mode:'nbs', stem: 'Infant <1 mo with fever, lethargy. Empiric therapy?', choices: ['Ampicillin + gent/cefotaxime', 'Ceftriaxone + vancomycin', 'Vancomycin + pip/tazo', 'Azithromycin'], answerIndex: 0, pearl: 'Neonates: cover GBS/Listeria with ampicillin.', weight: 3 },
+      { id: 'nbs_aom', topic: 'ENT', mode:'nbs', stem: 'AOM with bulging, immobile TM; first-line?', choices: ['High-dose amoxicillin', 'Augmentin first', 'Topical ciprofloxacin', 'Watchful waiting always'], answerIndex: 0, pearl: 'Amoxicillin first-line; Augmentin if recurrent/recent abx.', weight: 2 },
+      { id: 'nbs_kawasaki', topic: 'ID/Rheum', mode:'nbs', stem: '5-day fever, conjunctivitis, strawberry tongue, rash, edema. Next best step?', choices: ['IVIG + high-dose aspirin and echo', 'Amoxicillin', 'Steroids alone', 'No treatment'], answerIndex: 0, pearl: 'Prevent coronary aneurysm: IVIG + ASA; get echo.', weight: 3 },
+      { id: 'nbs_dka', topic: 'Endo', mode:'nbs', stem: 'Peds DKA: initial management sequence?', choices: ['Fluids → insulin → K⁺ as needed', 'Insulin → fluids → bicarb', 'Bicarb first', 'Insulin bolus then fluids'], answerIndex: 0, pearl: 'Fluids first; add K⁺ when urine output & K⁺ low-normal.', weight: 3 },
+      { id: 'nbs_scfe', topic: 'Ortho', mode:'nbs', stem: 'Obese adolescent with hip/knee pain, outward foot; next step?', choices: ['Non-weight-bearing + urgent pinning', 'Hip PT only', 'Steroid injection', 'Observe'], answerIndex: 0, pearl: 'SCFE → immediate non-WB and surgical pinning.', weight: 3 },
+      { id: 'nbs_transient_synovitis', topic: 'Ortho', mode:'nbs', stem: 'Post-URI child limping, afebrile, mild pain, normal labs. Next step?', choices: ['NSAIDs + observe', 'Emergent I&D', 'IV vanc + ceftriaxone', 'MRI now'], answerIndex: 0, pearl: 'Transient synovitis = benign; Kocher score low.', weight: 2 },
+    ];
+
+    const LS_KEY = 'pedsquest_mastery_v2';
+    function loadMastery(seed) {
+      try { const r = localStorage.getItem(LS_KEY); if (r) return JSON.parse(r); } catch(e) {}
+      const m = {}; seed.forEach(q => m[q.id] = { score: 0, seen: 0, correct: 0, wrong: 0 }); return m;
+    }
+    function saveMastery(m) { try { localStorage.setItem(LS_KEY, JSON.stringify(m)); } catch(e) {} }
+
+    function scheduleNext(all, mastery, recently) {
+      const scored = all.map(q => {
+        const m = mastery[q.id] || { score: 0, seen: 0, correct: 0, wrong: 0 };
+        const base = (q.weight ?? 1) * 2 + (q.mode === 'nbs' ? 1 : 0);
+        const penalty = m.score * 1.4;
+        const freshness = Math.max(0, 6 - Math.min(6, m.seen));
+        const repeatPenalty = recently.has(q.id) ? 10 : 0;
+        return { q, priority: base + freshness - penalty - repeatPenalty };
+      });
+      scored.sort((a, b) => b.priority - a.priority);
+      return scored[0].q;
+    }
+
+    const RedPanda = ({ mood, blinkKey }) => {
+      const base = { width: 140, height: 140 };
+      const face = ({
+        idle: { eye: '#222', mouth: '#333', ear: '#ff8a50', blush: '#ffb3a7', bg: '#ff7043' },
+        happy:{ eye: '#000', mouth: '#000', ear: '#ffa270', blush: '#ffd1c4', bg: '#66e08a' },
+        sad:  { eye: '#111', mouth: '#111', ear: '#cc6a3a', blush: '#ffb3a7', bg: '#ff6b81' },
+        critical:{ eye: '#000', mouth: '#000', ear: '#ffd58f', blush: '#fff0b3', bg: '#7fd0ff' },
+      })[mood];
+      const eyeH = blinkKey % 5 === 0 ? 2 : 8;
+      return (
+        <svg {...base} viewBox="0 0 140 140" style={{ imageRendering:'pixelated', filter: mood==='critical'? 'drop-shadow(0 0 8px #7fd0ff)': mood==='happy'? 'drop-shadow(0 0 8px #66e08a)': mood==='sad'? 'drop-shadow(0 0 8px #ff6b81)':'none' }}>
+          <rect x="0" y="0" width="140" height="140" rx="10" fill={face.bg} />
+          <rect x="20" y="10" width="24" height="18" fill={face.ear}/>
+          <rect x="96" y="10" width="24" height="18" fill={face.ear}/>
+          <rect x="25" y="28" width="90" height="78" fill="#ff935a"/>
+          <rect x="45" y="55" width="14" height={eyeH} fill={face.eye}/>
+          <rect x="81" y="55" width="14" height={eyeH} fill={face.eye}/>
+          <rect x="36" y="72" width="10" height="6" fill={face.blush}/>
+          <rect x="94" y="72" width="10" height="6" fill={face.blush}/>
+          {mood==='sad'
+            ? <rect x="67" y="78" width="6" height="2" fill={face.mouth}/>
+            : <rect x="66" y="76" width="8" height="2" fill={face.mouth}/>
+          }
+          {(mood==='happy' || mood==='critical') && (
+            <g>
+              <rect x="18" y="40" width="4" height="4" fill="#fff"/>
+              <rect x="116" y="34" width="3" height="3" fill="#fff"/>
+              <rect x="12" y="88" width="3" height="3" fill="#fff"/>
+              <rect x="124" y="94" width="4" height="4" fill="#fff"/>
+            </g>
+          )}
+        </svg>
+      );
+    };
+
+    function Game() {
+      const sfx = useSFX();
+      const [bank, setBank] = useState(SEED_QA);
+      const [mastery, setMastery] = useState(() => loadMastery(SEED_QA));
+      const [state, setState] = useState('menu');
+      const [current, setCurrent] = useState(null);
+      const [selection, setSelection] = useState(null);
+      const [reveal, setReveal] = useState(false);
+      const [lives, setLives] = useState(3);
+      const [score, setScore] = useState(0);
+      const [streak, setStreak] = useState(0);
+      const [timer, setTimer] = useState(25);
+      const [blinkKey, setBlinkKey] = useState(1);
+      const [mood, setMood] = useState('idle');
+      const [recentCycle, setRecentCycle] = useState(new Set());
+      const [examMode, setExamMode] = useState(false);
+
+      useEffect(() => { const id = setInterval(() => setBlinkKey(k => k + 1), 900); return () => clearInterval(id); }, []);
+      useEffect(() => saveMastery(mastery), [mastery]);
+
+      useEffect(() => {
+        if (state !== 'playing') return;
+        if (timer <= 0) { answer(-1); return; }
+        const id = setTimeout(() => setTimer(t => t - 1), 1000);
+        return () => clearTimeout(id);
+      }, [state, timer]);
+
+      const start = () => {
+        sfx.ambientStart();
+        setLives(3); setScore(0); setStreak(0); setReveal(false); setSelection(null); setMood('idle');
+        setRecentCycle(new Set());
+        const q = scheduleNext(bank, mastery, new Set()); setCurrent(q); setTimer(examMode ? 20 : 25);
+        setState('playing');
+      };
+
+      const next = () => {
+        setSelection(null); setReveal(false); setTimer(examMode ? Math.max(12, 20 - Math.floor(streak/3)) : Math.max(15, 25 - Math.floor(streak/3)));
+        const rec = new Set(recentCycle);
+        if (current) { rec.add(current.id); if (rec.size >= Math.min(bank.length, 12)) rec.clear(); }
+        const q = scheduleNext(bank, mastery, rec); setRecentCycle(rec); setCurrent(q);
+        setMood('idle');
+      };
+
+      const answer = (idx) => {
+        if (!current || reveal) return;
+        const correct = idx === current.answerIndex;
+        const m = { ...(mastery[current.id] || { score: 0, seen: 0, correct: 0, wrong: 0 }) };
+        m.seen += 1;
+        if (correct) {
+          m.score = Math.min(5, m.score + 1); m.correct += 1; setScore(s => s + 100 + streak*15); setStreak(s => s + 1); sfx.correct(); setMood(streak+1 >= 5 ? 'critical' : 'happy');
+          if (streak + 1 === 5) sfx.critical();
+        } else {
+          m.score = Math.max(0, m.score - 1); m.wrong += 1; setLives(l => l - 1); setStreak(0); sfx.wrong(); setMood('sad');
+        }
+        setMastery({ ...mastery, [current.id]: m });
+        setReveal(true);
+        if (!correct && lives - 1 <= 0) setTimeout(() => setState('gameover'), 550);
+      };
+
+      useEffect(() => {
+        const onKey = (e) => {
+          if (state === 'menu' && (e.key === 'Enter' || e.key === ' ')) start();
+          if (state === 'playing') {
+            const map = { '1':0,'2':1,'3':2,'4':3,'a':0,'b':1,'c':2,'d':3 };
+            if (map[e.key] !== undefined) { setSelection(map[e.key]); answer(map[e.key]); }
+          }
+          if ((state === 'result' || state === 'gameover') && (e.key === 'Enter' || e.key === ' ')) start();
+        };
+        window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
+      }, [state, mastery, current, lives, streak, examMode]);
+
+      const CaseBadge = () => (<span style={{background:'#222',color:'#ffd37a',padding:'2px 6px',border:'1px solid #444',marginLeft:8}}>CASE MODE</span>);
+
+      const Frame = ({children}) => (
+        <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'#0b0b0b',color:'#fff',fontFamily:'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',letterSpacing:0.3}}>
+          <div style={{width:'100%',maxWidth:900,border:'8px solid #333',boxShadow:'0 0 0 6px #000 inset'}}>
+            <div style={{background:'#121212',padding:16}}>{children}</div>
+          </div>
+        </div>
+      );
+      const Button = ({ children, ...props }) => (
+        <button {...props} onMouseDown={() => sfx.click()} style={{padding:'10px 14px',background:'#1f1f1f',color:'#fff',border:'4px solid #333',boxShadow:'0 0 0 3px #000 inset',cursor:'pointer',marginRight:8,marginBottom:8}}>{children}</button>
+      );
+      const TimerBar = () => (
+        <div style={{height:10,background:'#1b1b1b',border:'1px solid #333',marginBottom:12}}>
+          <div style={{height:'100%',width:`${(timer/(examMode?20:25))*100}%`,background:'linear-gradient(90deg,#66d9ff,#8aff66)'}}/>
+        </div>
+      );
+
+      const Progress = () => (
+        <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:8}}>
+          <div><b style={{color:'#8aff66'}}>Score</b>: {score} <span style={{marginLeft:12}}><b style={{color:'#66d9ff'}}>Streak</b>: {streak}{streak>=5 && <CaseBadge/>}</span></div>
+          <div><b style={{color:'#ff66aa'}}>Lives</b>: {'❤'.repeat(Math.max(0,lives))}{'·'.repeat(Math.max(0,3-lives))}</div>
+        </div>
+      );
+
+      const Choice = ({i, text, correct, wrongSel, onClick}) => (
+        <Button onClick={onClick} style={{ padding:'10px 12px', background: correct? '#0f5132' : wrongSel? '#5c1b22' : '#1f1f1f', borderColor: correct? '#198754' : wrongSel? '#842029' : '#333', boxShadow:'0 0 0 3px #000 inset', width:'100%', textAlign:'left' }}>
+          <span style={{color:'#8aff66',marginRight:8}}>{i+1}.</span> {text}
+        </Button>
+      );
+
+      const onImport = (raw) => {
+        const lines = raw.split(/\n+/).map(s => s.trim()).filter(Boolean);
+        const items = [];
+        let idn = 0;
+        for (const ln of lines) {
+          if (/next best step|NBS|→|->|:/.test(ln.toLowerCase())) {
+            const parts = ln.split(/→|->|:/);
+            if (parts.length >= 2) {
+              const stem = parts[0].trim().replace(/^\d+\.?\s*/, '');
+              const ans = parts.slice(1).join(':').trim();
+              const pool = ['Observe', 'Order CXR', 'Start IV fluids', 'Give antibiotics', 'Obtain echo', 'Secure airway', 'MRI brain', 'Consult surgery'];
+              const choices = new Set([ans]);
+              while (choices.size < 4) choices.add(pool[Math.floor(Math.random()*pool.length)]);
+              const arr = Array.from(choices).slice(0,4);
+              const answerIndex = arr.indexOf(ans);
+              items.push({ id: `imp_${idn++}`, topic: 'Imported', mode:'nbs', stem, choices: arr, answerIndex, pearl: ans, weight: 2 });
+            }
+          }
+          if (items.length > 120) break;
+        }
+        if (items.length) {
+          setBank(prev => [...prev, ...items]);
+          setMastery(m => { const copy = { ...m }; items.forEach(q => { copy[q.id] = { score:0, seen:0, correct:0, wrong:0 }; }); return copy; });
+          alert(`Imported ${items.length} items. Start to play with expanded bank!`);
+          setState('menu');
+        } else {
+          alert('Could not detect items. Paste plain text with "→" or ":" separating stem and answer.');
+        }
+      };
+
+      return (
+        <Frame>
+          <style>{`@keyframes wiggle{0%{transform:translateX(0)}25%{transform:translateX(-6px)}50%{transform:translateX(6px)}75%{transform:translateX(-6px)}100%{transform:translateX(0)}}`}</style>
+
+          {state === 'menu' && (
+            <div style={{textAlign:'center'}}>
+              <RedPanda mood={mood} blinkKey={blinkKey} />
+              <h1 style={{fontSize:28,fontWeight:800,margin:'8px 0'}}>Peds Quest: <span style={{color:'#8aff66'}}>Boss Rush</span></h1>
+              <p style={{color:'#bbb',fontSize:13,marginBottom:12}}>8‑bit pediatrics drill • Next‑Best‑Step focus • Adaptive & non‑repeating</p>
+              <div style={{marginBottom:12}}>
+                <Button onClick={() => setState('howto')}>How to Play</Button>
+                <Button onClick={start} style={{background:'#0f5132',borderColor:'#198754'}}>Start (Enter)</Button>
+                <Button onClick={() => setExamMode(e => !e)}>{examMode? 'Exam Mode: ON' : 'Exam Mode: OFF'}</Button>
+                <Button onClick={() => setState('import')}>Paste Outline to Expand</Button>
+              </div>
+              <div style={{fontSize:11,color:'#aaa',maxWidth:680,margin:'0 auto',textAlign:'left',lineHeight:1.5}}>
+                <p>• Non‑repeating queue within each cycle. • 25s timer (Exam Mode 20s). • 3 lives. • Streak ≥5 → <b>Critical Hit</b> celebration & bonus.</p>
+                <p>• "Paste Outline" lets you drop text (e.g., Mehlman bullets like "Epiglottitis → Intubate first") to autogenerate cards in seconds.</p>
+              </div>
+            </div>
+          )}
+
+          {state === 'howto' && (
+            <div>
+              <h2 style={{fontSize:22,fontWeight:800,marginBottom:8}}>How to Play</h2>
+              <ul style={{fontSize:14,lineHeight:1.6,color:'#ddd'}}>
+                <li>Press <b>Start</b>. A question appears with 4 choices. Answer using <b>1–4</b> or <b>A–D</b>.</li>
+                <li>Focus on <b>next best step</b> patterns and core facts. Tiny <b>pearls</b> reinforce the why.</li>
+                <li><b>Dynamic difficulty</b>: timer tightens with streaks; distractors get subtler.</li>
+                <li><b>Critical Hit Mode</b>: at 5‑streak the panda throws a party and you earn bonus points.</li>
+                <li><b>Case Mode</b>: some prompts are mini‑vignettes requiring action first.</li>
+              </ul>
+              <div style={{marginTop:10}}>
+                <Button onClick={() => setState('menu')}>Back</Button>
+                <Button onClick={start} style={{background:'#0f5132',borderColor:'#198754'}}>Start</Button>
+              </div>
+            </div>
+          )}
+
+          {state === 'import' && (
+            <div>
+              <h2 style={{fontSize:22,fontWeight:800,marginBottom:8}}>Paste Outline</h2>
+              <p style={{fontSize:12,color:'#bbb',marginBottom:8}}>Paste plain text from the Mehlman outline. Lines like <i>"Epiglottitis → Secure airway"</i> work best. I’ll auto-create cards.</p>
+              <textarea id="importBox" style={{width:'100%',height:180,background:'#0f0f0f',color:'#eaeaea',border:'1px solid #333',padding:8}} placeholder={"e.g.,\nEpiglottitis → Secure airway\nAOM w/ bulging TM → High-dose amoxicillin\nNeonate fever <1 mo → Ampicillin + gent/cefotaxime"}></textarea>
+              <div style={{marginTop:8}}>
+                <Button onClick={() => { const el = document.getElementById('importBox'); onImport(el.value); }}>Generate Cards</Button>
+                <Button onClick={() => setState('menu')}>Cancel</Button>
+              </div>
+            </div>
+          )}
+
+          {state === 'playing' && current && (
+            <div>
+              <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:8}}>
+                <RedPanda mood={mood} blinkKey={blinkKey} />
+                <div style={{flex:1}}>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:8}}>
+                    <div><b style={{color:'#8aff66'}}>Score</b>: {score} <span style={{marginLeft:12}}><b style={{color:'#66d9ff'}}>Streak</b>: {streak}{streak>=5 && <span style={{background:'#222',color:'#ffd37a',padding:'2px 6px',border:'1px solid #444',marginLeft:8}}>CASE MODE</span>}</span></div>
+                    <div><b style={{color:'#ff66aa'}}>Lives</b>: {'❤'.repeat(Math.max(0,lives))}{'·'.repeat(Math.max(0,3-lives))}</div>
+                  </div>
+                  <div style={{height:10,background:'#1b1b1b',border:'1px solid #333',marginBottom:12}}>
+                    <div style={{height:'100%',width:`${(timer/(examMode?20:25))*100}%`,background:'linear-gradient(90deg,#66d9ff,#8aff66)'}}></div>
+                  </div>
+                  <h3 style={{fontSize:18,margin:'8px 0'}}>
+                    <span style={{color:'#66d9ff',marginRight:6}}>{current.topic}</span>
+                    {current.mode==='nbs' && <span style={{background:'#222',color:'#ffd37a',padding:'2px 6px',border:'1px solid #444',marginLeft:8}}>CASE MODE</span>}
+                  </h3>
+                  <h2 style={{fontSize:18,marginBottom:10}}>{current.stem}</h2>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                    {current.choices.map((c, i) => {
+                      const isCorrect = reveal && i === current.answerIndex;
+                      const isWrongSel = reveal && selection === i && !isCorrect;
+                      return (
+                        <Button key={i} onClick={() => { setSelection(i); answer(i); }} style={{ padding:'10px 12px', background: isCorrect? '#0f5132' : isWrongSel? '#5c1b22' : '#1f1f1f', borderColor: isCorrect? '#198754' : isWrongSel? '#842029' : '#333', boxShadow:'0 0 0 3px #000 inset', width:'100%', textAlign:'left' }}>
+                          <span style={{color:'#8aff66',marginRight:8}}>{i+1}.</span> {c}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {state === 'result' && current && (
+            <div style={{textAlign:'center'}}>
+              <RedPanda mood={mood} blinkKey={blinkKey} />
+              <h3 style={{fontSize:20,fontWeight:800,margin:'8px 0'}}>{selection === current.answerIndex ? 'Correct!' : 'Not quite'}</h3>
+              <p style={{fontSize:14,color:'#ccc',marginBottom:6}}>Answer: <b>{current.choices[current.answerIndex]}</b></p>
+              {current.pearl && <p style={{fontSize:13,color:'#8affc1',marginBottom:10}}>Pearl: {current.pearl}</p>}
+              <div>
+                <Button onClick={() => { setState('playing'); (function(){ const s=selection; })(); }}>{/* placeholder */}Next (Enter)</Button>
+                <Button onClick={() => setState('menu')}>Menu</Button>
+              </div>
+            </div>
+          )}
+
+          {state === 'gameover' && (
+            <div style={{textAlign:'center'}}>
+              <RedPanda mood={'sad'} blinkKey={blinkKey} />
+              <h2 style={{fontSize:24,fontWeight:800,color:'#ff6b81',margin:'8px 0'}}>Game Over</h2>
+              <p style={{marginBottom:10}}>Final Score: <b>{score}</b></p>
+              <div>
+                <Button onClick={start} style={{background:'#0f5132',borderColor:'#198754'}}>Play Again</Button>
+                <Button onClick={() => setState('menu')}>Menu</Button>
+              </div>
+            </div>
+          )}
+
+          {reveal && state==='playing' && setTimeout(() => setState('result'), 250) && null}
+        </Frame>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<Game />);
+  </script>
+</body>
+</html>
